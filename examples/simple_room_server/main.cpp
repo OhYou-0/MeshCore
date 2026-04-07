@@ -18,6 +18,12 @@ void halt() {
 
 static char command[MAX_POST_TEXT_LEN+1];
 
+#if defined(MESH_ETHERNET_WEB)
+static void handleWebConsoleCommand(char* web_command, char* reply) {
+  the_mesh.handleCommand(0, web_command, reply);
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -72,6 +78,14 @@ void setup() {
 
   the_mesh.begin(fs);
 
+#if defined(MESH_ETHERNET_WEB)
+  char node_id[(PUB_KEY_SIZE * 2) + 1];
+  mesh::Utils::toHex(node_id, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  board.configureNetworkServices(fs, the_mesh.getNodeName(), the_mesh.getRole(), node_id, handleWebConsoleCommand);
+  board.consolePrintf("Room ID: %s", node_id);
+  board.consolePrintLine("USB serial and /webserial now share the local CLI.");
+#endif
+
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
@@ -113,4 +127,8 @@ void loop() {
   ui_task.loop();
 #endif
   rtc_clock.tick();
+
+#if defined(MESH_ETHERNET_WEB)
+  board.loopNetworkServices();
+#endif
 }

@@ -201,10 +201,20 @@ int MyMesh::handleRequest(ClientInfo *sender, uint32_t sender_timestamp, uint8_t
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 #if MESH_PACKET_LOGGING
+  (void)snr;
+  (void)rssi;
   Serial.print(getLogDateTime());
   Serial.print(" RAW: ");
   mesh::Utils::printHex(Serial, raw, len);
   Serial.println();
+
+#if defined(MESH_ETHERNET_WEB)
+  char raw_hex[(MAX_TRANS_UNIT * 2) + 1];
+  char raw_line[(MAX_TRANS_UNIT * 2) + 48];
+  mesh::Utils::toHex(raw_hex, raw, len);
+  snprintf(raw_line, sizeof(raw_line), "%s RAW: %s", getLogDateTime(), raw_hex);
+  board.consolePrintLine(raw_line);
+#endif
 #endif
 }
 
@@ -718,11 +728,41 @@ void MyMesh::dumpLogFile() {
   File f = _fs->open(PACKET_LOG_FILE);
 #endif
   if (f) {
+#if defined(MESH_ETHERNET_WEB)
+    char line[160];
+    size_t line_len = 0;
+#endif
     while (f.available()) {
       int c = f.read();
       if (c < 0) break;
       Serial.print((char)c);
+
+#if defined(MESH_ETHERNET_WEB)
+      if (c == '\r') {
+        continue;
+      }
+      if (c == '\n') {
+        line[line_len] = 0;
+        if (line_len > 0) {
+          board.consolePrintLine(line);
+        }
+        line_len = 0;
+      } else if (line_len < sizeof(line) - 1) {
+        line[line_len++] = (char)c;
+      } else {
+        line[line_len] = 0;
+        board.consolePrintLine(line);
+        line[0] = (char)c;
+        line_len = 1;
+      }
+#endif
     }
+#if defined(MESH_ETHERNET_WEB)
+    if (line_len > 0) {
+      line[line_len] = 0;
+      board.consolePrintLine(line);
+    }
+#endif
     f.close();
   }
 }
@@ -798,10 +838,20 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     }
   } else if (sender_timestamp == 0 && strcmp(command, "get acl") == 0) {
     Serial.println("ACL:");
+#if defined(MESH_ETHERNET_WEB)
+    board.consolePrintLine("ACL:");
+#endif
     for (int i = 0; i < acl.getNumClients(); i++) {
       auto c = acl.getClientByIdx(i);
       if (c->permissions == 0) continue;  // skip deleted (or guest) entries
 
+#if defined(MESH_ETHERNET_WEB)
+      char acl_line[(PUB_KEY_SIZE * 2) + 8];
+      char acl_hex[(PUB_KEY_SIZE * 2) + 1];
+      mesh::Utils::toHex(acl_hex, c->id.pub_key, PUB_KEY_SIZE);
+      snprintf(acl_line, sizeof(acl_line), "%02X %s", c->permissions, acl_hex);
+      board.consolePrintLine(acl_line);
+#endif
       Serial.printf("%02X ", c->permissions);
       mesh::Utils::printHex(Serial, c->id.pub_key, PUB_KEY_SIZE);
       Serial.printf("\n");

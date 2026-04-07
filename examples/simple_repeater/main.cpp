@@ -19,6 +19,12 @@ void halt() {
 
 static char command[160];
 
+#if defined(MESH_ETHERNET_WEB)
+static void handleWebConsoleCommand(char* web_command, char* reply) {
+  the_mesh.handleCommand(0, web_command, reply);
+}
+#endif
+
 // For power saving
 unsigned long lastActive = 0; // mark last active time
 unsigned long nextSleepinSecs = 120; // next sleep in seconds. The first sleep (if enabled) is after 2 minutes from boot
@@ -95,6 +101,14 @@ void setup() {
 
   the_mesh.begin(fs);
 
+#if defined(MESH_ETHERNET_WEB)
+  char node_id[(PUB_KEY_SIZE * 2) + 1];
+  mesh::Utils::toHex(node_id, the_mesh.self_id.pub_key, PUB_KEY_SIZE);
+  board.configureNetworkServices(fs, the_mesh.getNodeName(), the_mesh.getRole(), node_id, handleWebConsoleCommand);
+  board.consolePrintf("Repeater ID: %s", node_id);
+  board.consolePrintLine("USB serial and /webserial now share the local CLI.");
+#endif
+
 #ifdef DISPLAY_CLASS
   ui_task.begin(the_mesh.getNodePrefs(), FIRMWARE_BUILD_DATE, FIRMWARE_VERSION);
 #endif
@@ -153,6 +167,10 @@ void loop() {
   ui_task.loop();
 #endif
   rtc_clock.tick();
+
+#if defined(MESH_ETHERNET_WEB)
+  board.loopNetworkServices();
+#endif
 
   if (the_mesh.getNodePrefs()->powersaving_enabled && !the_mesh.hasPendingWork()) {
     #if defined(NRF52_PLATFORM)
