@@ -25,6 +25,9 @@ constexpr size_t RAW_TCP_MAX_CLIENTS = 4;
 constexpr size_t RAW_TCP_INPUT_BUFFER = 160;
 
 constexpr unsigned long NETWORK_RELOAD_DELAY_MS = 250;
+constexpr unsigned long WEBSERIAL_IDLE_TIMEOUT_MS = 600000;
+constexpr unsigned long WEBSERIAL_RECONNECT_DELAY_MS = 2000;
+constexpr uint16_t WEBSERIAL_KEEPALIVE_SECONDS = 30;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 120000;
 constexpr unsigned long WIFI_RECONNECT_INTERVAL_MS = 15000;
 
@@ -162,6 +165,7 @@ const char* WEB_CONSOLE_HTML = R"HTML(
       <a class="button" href="/network">Network Settings</a>
       <a class="button" href="/log" target="_blank" rel="noopener">Packet Log</a>
       <a class="button" href="/update" target="_blank" rel="noopener">Firmware Update</a>
+      <button id="reconnect" type="button">Reconnect</button>
       <button id="clear" type="button">Clear Console</button>
     </section>
   </main>
@@ -170,11 +174,50 @@ const char* WEB_CONSOLE_HTML = R"HTML(
     const statusEl = document.getElementById("status");
     const inputEl = document.getElementById("command");
     const formEl = document.getElementById("command-form");
+    const reconnectEl = document.getElementById("reconnect");
     const clearEl = document.getElementById("clear");
+    const IDLE_TIMEOUT_MS = 600000;
+    const RECONNECT_DELAY_MS = 2000;
+
+    let socket = null;
+    let reconnectTimer = 0;
+    let idleTimer = 0;
+    let idleTimedOut = false;
 
     function appendLine(line) {
       consoleEl.textContent += line.endsWith("\n") ? line : line + "\n";
       consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+
+    function clearConsole() {
+      consoleEl.textContent = "";
+    }
+
+    function cancelReconnect() {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = 0;
+      }
+    }
+
+    function scheduleIdleTimeout() {
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => {
+        idleTimedOut = true;
+        clearConsole();
+        appendLine("[webserial timed out after 10 minutes of inactivity]");
+        statusEl.textContent = "Timed out";
+        reconnectEl.disabled = false;
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+          socket.close(1000, "idle timeout");
+        }
+      }, IDLE_TIMEOUT_MS);
+    }
+
+    function markUserActivity() {
+      idleTimedOut = false;
+      reconnectEl.disabled = true;
+      scheduleIdleTimeout();
     }
 
     async function refreshStatus() {
@@ -189,37 +232,93 @@ const char* WEB_CONSOLE_HTML = R"HTML(
       }
     }
 
-    const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    function connectSocket(clearFirst = false) {
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
 
-    socket.addEventListener("open", () => {
-      appendLine("[webserial connected]");
-      refreshStatus();
-    });
+      cancelReconnect();
+      if (clearFirst) {
+        clearConsole();
+      }
 
-    socket.addEventListener("message", (event) => {
-      appendLine(event.data);
-    });
+      statusEl.textContent = "Connecting...";
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      socket = new WebSocket(`${scheme}://${location.host}/ws`);
 
-    socket.addEventListener("close", () => {
-      appendLine("[webserial disconnected]");
-      statusEl.textContent = "Disconnected";
-    });
+      socket.addEventListener("open", () => {
+        reconnectEl.disabled = true;
+        appendLine("[webserial connected]");
+        refreshStatus();
+        if (!idleTimedOut) {
+          scheduleIdleTimeout();
+        }
+      });
+
+      socket.addEventListener("message", (event) => {
+        appendLine(event.data);
+      });
+
+      socket.addEventListener("close", () => {
+        socket = null;
+        reconnectEl.disabled = false;
+        if (idleTimedOut) {
+          statusEl.textContent = "Timed out";
+          return;
+        }
+
+        appendLine("[webserial disconnected]");
+        statusEl.textContent = "Disconnected, reconnecting...";
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = 0;
+          connectSocket(true);
+        }, RECONNECT_DELAY_MS);
+      });
+
+      socket.addEventListener("error", () => {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+      });
+    }
 
     formEl.addEventListener("submit", (event) => {
       event.preventDefault();
       const command = inputEl.value.trim();
-      if (!command || socket.readyState !== WebSocket.OPEN) {
+      markUserActivity();
+      if (!command) {
+        return;
+      }
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        connectSocket(true);
         return;
       }
       socket.send(command);
       inputEl.value = "";
     });
 
-    clearEl.addEventListener("click", () => {
-      consoleEl.textContent = "";
+    reconnectEl.addEventListener("click", () => {
+      markUserActivity();
+      connectSocket(true);
     });
 
+    clearEl.addEventListener("click", () => {
+      markUserActivity();
+      clearConsole();
+    });
+
+    document.addEventListener("keydown", markUserActivity);
+    document.addEventListener("mousedown", markUserActivity);
+    document.addEventListener("touchstart", markUserActivity, { passive: true });
+    window.addEventListener("focus", () => {
+      if (!idleTimedOut && (!socket || socket.readyState === WebSocket.CLOSED)) {
+        connectSocket(true);
+      }
+    });
+
+    reconnectEl.disabled = true;
+    markUserActivity();
+    connectSocket(true);
     setInterval(refreshStatus, 5000);
   </script>
 </body>
@@ -1151,6 +1250,8 @@ static void onConsoleEvent(AsyncWebSocket* server, AsyncWebSocketClient* client,
   (void)server;
 
   if (type == WS_EVT_CONNECT) {
+    client->setCloseClientOnQueueFull(false);
+    client->keepAlivePeriod(WEBSERIAL_KEEPALIVE_SECONDS);
     sendConsoleHistory(client);
     return;
   }

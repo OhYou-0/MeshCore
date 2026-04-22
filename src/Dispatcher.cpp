@@ -4,6 +4,10 @@
   #include <Arduino.h>
 #endif
 
+#if MESH_PACKET_LOGGING && defined(MESH_ETHERNET_WEB)
+  #include <target.h>
+#endif
+
 #include <math.h>
 
 namespace mesh {
@@ -14,6 +18,56 @@ namespace mesh {
 
 #ifndef NOISE_FLOOR_CALIB_INTERVAL
   #define NOISE_FLOOR_CALIB_INTERVAL   2000     // 2 seconds
+#endif
+
+#if MESH_PACKET_LOGGING && defined(MESH_ETHERNET_WEB)
+static void mirrorRxPacketLogToBoard(const char* timestamp, Packet* pkt, int air_time, float score, int last_rssi) {
+  char hash_hex[(MAX_HASH_SIZE * 2) + 1];
+  uint8_t packet_hash[MAX_HASH_SIZE];
+  pkt->calculatePacketHash(packet_hash);
+  mesh::Utils::toHex(hash_hex, packet_hash, MAX_HASH_SIZE);
+
+  char line[256];
+  int written = snprintf(line, sizeof(line),
+                         "%s: RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%d hash=%s",
+                         timestamp, pkt->getRawLength(), pkt->getPayloadType(),
+                         pkt->isRouteDirect() ? "D" : "F", pkt->payload_len, (int)pkt->getSNR(),
+                         last_rssi, (int)(score * 1000), air_time, hash_hex);
+  if (written < 0) {
+    written = 0;
+  } else if (written >= (int)sizeof(line)) {
+    written = (int)sizeof(line) - 1;
+  }
+
+  if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ ||
+      pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+    snprintf(line + written, sizeof(line) - written, " [%02X -> %02X]",
+             (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
+  }
+
+  board.consolePrintLine(line);
+}
+
+static void mirrorTxPacketLogToBoard(const char* timestamp, Packet* pkt, int len) {
+  char line[192];
+  int written = snprintf(line, sizeof(line),
+                         "%s: TX, len=%d (type=%d, route=%s, payload_len=%d)",
+                         timestamp, len, pkt->getPayloadType(),
+                         pkt->isRouteDirect() ? "D" : "F", pkt->payload_len);
+  if (written < 0) {
+    written = 0;
+  } else if (written >= (int)sizeof(line)) {
+    written = (int)sizeof(line) - 1;
+  }
+
+  if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH || pkt->getPayloadType() == PAYLOAD_TYPE_REQ ||
+      pkt->getPayloadType() == PAYLOAD_TYPE_RESPONSE || pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) {
+    snprintf(line + written, sizeof(line) - written, " [%02X -> %02X]",
+             (uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
+  }
+
+  board.consolePrintLine(line);
+}
 #endif
 
 void Dispatcher::begin() {
@@ -233,6 +287,10 @@ void Dispatcher::checkRecv() {
     } else {
       Serial.printf("\n");
     }
+
+    #if defined(MESH_ETHERNET_WEB)
+    mirrorRxPacketLogToBoard(getLogDateTime(), pkt, air_time, score, (int)_radio->getLastRSSI());
+    #endif
     #endif
     logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
 
@@ -347,6 +405,10 @@ void Dispatcher::checkSend() {
       } else {
         Serial.printf("\n");
       }
+
+      #if defined(MESH_ETHERNET_WEB)
+      mirrorTxPacketLogToBoard(getLogDateTime(), outbound, len);
+      #endif
     #endif
     }
   }
